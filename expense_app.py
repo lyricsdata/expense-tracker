@@ -1,344 +1,595 @@
-"""Streamlit UI for the expense tracker.
-
-Run from this folder with:
-streamlit run expense_app.py
+"""家計簿アプリ — Streamlit UI
+3ページ構成: Overview / Heatmap / Details
+tracker.py の公開インターフェースを使用。
 """
 
 import calendar
-from datetime import date, datetime
+from datetime import datetime, date
 
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 import tracker
-from tracker import CATEGORIES
 
-# Shared category colour palette (used across every tab).
-CATEGORY_COLORS = {
-    'food':                 '#FF6B6B',
-    'books_learning':       '#4ECDC4',
-    'fixed_costs':          '#45B7D1',
-    'entertainment_social': '#96CEB4',
-    'others':               '#FFEAA7',
+# ─────────────────────────────────────────────
+# 定数
+# ─────────────────────────────────────────────
+CAT_CONFIG = {
+    "food":                  {"label": "食費",      "icon": "🛒", "color": "#5DCAA5"},
+    "fixed_costs":           {"label": "固定費",    "icon": "🏠", "color": "#7F77DD"},
+    "entertainment_social":  {"label": "娯楽・交際", "icon": "🎵", "color": "#F0997B"},
+    "books_learning":        {"label": "本・学習",  "icon": "📚", "color": "#EF9F27"},
+    "others":                {"label": "その他",    "icon": "🏥", "color": "#B4B2A9"},
 }
 
-MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-
-st.set_page_config(page_title="Expense Tracker", page_icon="💰", layout="wide")
-
-tracker.initialize_csv()
-
-
-# --------------------------------------------------------------------------- #
-# Sidebar
-# --------------------------------------------------------------------------- #
-st.sidebar.title("💰 Expense Tracker")
-
-years = tracker.available_years()
-current_year = date.today().year
-if current_year not in years:
-    years = sorted(set(years) | {current_year})
-default_year_index = years.index(current_year)
-
-selected_year = st.sidebar.selectbox(
-    "Year", years, index=default_year_index, format_func=str
+# ─────────────────────────────────────────────
+# ページ設定
+# ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="家計簿",
+    page_icon="💴",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-all_categories = list(CATEGORIES.keys())
-selected_categories = st.sidebar.multiselect(
-    "Categories", all_categories, default=all_categories
+# ─────────────────────────────────────────────
+# カスタム CSS
+# ─────────────────────────────────────────────
+st.markdown("""
+<style>
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic UI',
+                 'Segoe UI', sans-serif !important;
+}
+.stApp { background: #FAFAF8; }
+.block-container {
+    max-width: 720px !important;
+    padding: 4rem 1rem 3rem !important;
+    margin: 0 auto;
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0;
+    border-bottom: 1px solid #E8E7E2;
+    background: transparent;
+}
+.stTabs [data-baseweb="tab"] {
+    font-size: 14px;
+    font-weight: 500;
+    color: #888780;
+    padding: 0.6rem 1.2rem;
+    border-radius: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+}
+.stTabs [aria-selected="true"] {
+    color: #2C2C2A !important;
+    border-bottom: 2px solid #5DCAA5 !important;
+    background: transparent !important;
+}
+[data-testid="stMetric"] {
+    background: #FFFFFF;
+    border: 0.5px solid #E8E7E2;
+    border-radius: 12px;
+    padding: 1rem 1.25rem !important;
+}
+[data-testid="stMetricLabel"] { font-size: 12px !important; color: #888780 !important; font-weight: 400 !important; }
+[data-testid="stMetricValue"] { font-size: 22px !important; font-weight: 500 !important; color: #2C2C2A !important; }
+[data-testid="stMetricDelta"] { font-size: 12px !important; }
+.section-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: #2C2C2A;
+    margin: 1.5rem 0 0.75rem;
+}
+.tx-card {
+    background: #FFFFFF;
+    border: 0.5px solid #E8E7E2;
+    border-radius: 12px;
+    padding: 0;
+    margin-bottom: 0.5rem;
+    overflow: hidden;
+}
+.tx-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 0.5px solid #F1EFE8;
+}
+.tx-row:last-child { border-bottom: none; }
+.tx-icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; flex-shrink: 0;
+}
+.tx-info { flex: 1; min-width: 0; }
+.tx-name {
+    font-size: 13px; font-weight: 500;
+    color: #2C2C2A;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tx-meta { font-size: 11px; color: #B4B2A9; margin-top: 2px; }
+.tx-amount { font-size: 13px; font-weight: 500; color: #D85A30; flex-shrink: 0; }
+.stTextInput input, .stNumberInput input, .stSelectbox select, .stTextArea textarea {
+    border: 0.5px solid #D3D1C7 !important;
+    border-radius: 8px !important;
+    background: #FFFFFF !important;
+    font-size: 14px !important;
+    color: #2C2C2A !important;
+}
+.stTextInput input:focus, .stNumberInput input:focus {
+    border-color: #5DCAA5 !important;
+    box-shadow: 0 0 0 2px rgba(93,202,165,0.15) !important;
+}
+.stButton > button {
+    border: 0.5px solid #D3D1C7 !important;
+    background: transparent !important;
+    color: #5F5E5A !important;
+    border-radius: 8px !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    padding: 0.5rem 1.5rem !important;
+    transition: background 0.15s;
+}
+.stButton > button:hover { background: #F7F6F3 !important; }
+.stButton > button[kind="primary"] {
+    background: #5DCAA5 !important;
+    border-color: #5DCAA5 !important;
+    color: #FFFFFF !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: #1D9E75 !important;
+    border-color: #1D9E75 !important;
+}
+hr { border: none; border-top: 0.5px solid #E8E7E2; margin: 1rem 0; }
+.stSuccess { border-radius: 8px !important; }
+.stError   { border-radius: 8px !important; }
+[data-testid="collapsedControl"] { display: none; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# ヘルパー
+# ─────────────────────────────────────────────
+def fmt_sgd(v: float) -> str:
+    return f"SGD {int(v):,}"
+
+
+def cat_label(cat: str) -> str:
+    return CAT_CONFIG.get(cat, {}).get("label", cat)
+
+
+def cat_icon(cat: str) -> str:
+    return CAT_CONFIG.get(cat, {}).get("icon", "💴")
+
+
+def cat_color(cat: str) -> str:
+    return CAT_CONFIG.get(cat, {}).get("color", "#B4B2A9")
+
+
+def icon_bg(cat: str) -> str:
+    return {
+        "food":                 "#E1F5EE",
+        "fixed_costs":          "#EEEDFE",
+        "entertainment_social": "#FAECE7",
+        "books_learning":       "#FAEEDA",
+        "others":               "#F1EFE8",
+    }.get(cat, "#F1EFE8")
+
+
+def load_df(year=None) -> pd.DataFrame:
+    expenses = tracker.load_expenses(year=year)
+    if not expenses:
+        return pd.DataFrame(columns=tracker.FIELDNAMES)
+    df = pd.DataFrame(expenses)
+    df["date"] = pd.to_datetime(df["date"])
+    df["amount"] = df["amount"].astype(float)
+    df = df[df["category"].isin(tracker.CATEGORIES)]  # 不正カテゴリを除外
+    return df
+
+
+def tx_rows_html(df_rows) -> str:
+    html = ""
+    for _, row in df_rows.iterrows():
+        bg    = icon_bg(row["category"])
+        notes = row["notes"] if row["notes"] else cat_label(row["category"])
+        sub   = row["subcategory"] if row["subcategory"] else cat_label(row["category"])
+        meta  = f"{row['date'].strftime('%Y/%m/%d')}　{sub}"
+        html += f"""
+        <div class="tx-row">
+          <div class="tx-icon" style="background:{bg};">{cat_icon(row['category'])}</div>
+          <div class="tx-info">
+            <div class="tx-name">{notes}</div>
+            <div class="tx-meta">{meta}</div>
+          </div>
+          <div class="tx-amount">−{fmt_sgd(row['amount'])}</div>
+        </div>"""
+    return html
+
+
+# ─────────────────────────────────────────────
+# ページヘッダー
+# ─────────────────────────────────────────────
+tracker.initialize_sheet()
+years = tracker.available_years() or [datetime.now().year]
+current_year = datetime.now().year
+current_month = datetime.now().month
+
+col_title, col_year = st.columns([3, 1])
+with col_title:
+    st.markdown("## 家計簿")
+with col_year:
+    selected_year = st.selectbox(
+        "年", years, index=len(years) - 1, label_visibility="collapsed"
+    )
+
+# ─────────────────────────────────────────────
+# タブ
+# ─────────────────────────────────────────────
+tab_overview, tab_heatmap, tab_details, tab_add = st.tabs(
+    ["Overview", "Heatmap", "Details", "+ 追加"]
 )
 
-st.sidebar.divider()
-st.sidebar.subheader("➕ Add expense")
 
-# Category drives the subcategory options, so it lives outside the form to
-# allow the subcategory selectbox to react to the chosen category.
-form_category = st.sidebar.selectbox("Category", all_categories, key="form_category")
-
-with st.sidebar.form("add_expense_form", clear_on_submit=True):
-    form_date = st.date_input("Date", value=date.today())
-    form_amount = st.number_input("Amount (SGD)", min_value=0.01, step=0.01, value=0.01)
-    form_subcategory = st.selectbox("Subcategory", CATEGORIES[form_category])
-    form_notes = st.text_input("Notes (optional)")
-    submitted = st.form_submit_button("Add expense")
-
-    if submitted:
-        try:
-            tracker.add_expense(
-                form_date.strftime("%Y-%m-%d"),
-                form_amount,
-                form_category,
-                form_subcategory,
-                form_notes,
-            )
-            st.success(f"Added SGD {form_amount:,.2f} to {form_category}/{form_subcategory}")
-            st.rerun()
-        except ValueError as e:
-            st.error(str(e))
-
-
-# --------------------------------------------------------------------------- #
-# Data (filtered by sidebar selections)
-# --------------------------------------------------------------------------- #
-expenses = tracker.load_expenses(year=selected_year, categories=selected_categories)
-
-tab_overview, tab_heatmap, tab_details = st.tabs(
-    ["📊 Overview", "📅 Heatmap", "📋 Details"]
-)
-
-
-# --------------------------------------------------------------------------- #
-# Overview tab
-# --------------------------------------------------------------------------- #
+# ═══════════════════════════════════════════════════════════
+# TAB 1 — OVERVIEW
+# ═══════════════════════════════════════════════════════════
 with tab_overview:
-    st.subheader(f"{selected_year} Overview")
+    df = load_df(year=selected_year)
 
-    monthly_cat = tracker.monthly_totals_by_category(expenses)
-    # month index (1-12) -> total
-    month_totals = {m: 0.0 for m in range(1, 13)}
-    for month_key, cats in monthly_cat.items():
-        m = int(month_key[5:7])
-        month_totals[m] = sum(cats.values())
+    df_month = df[
+        (df["date"].dt.year == selected_year) &
+        (df["date"].dt.month == current_month)
+    ] if selected_year == current_year else df.iloc[0:0]
 
-    today = date.today()
-    # "Current month" is today's month when viewing the current year,
-    # otherwise December of the selected (past) year.
-    current_month = today.month if selected_year == today.year else 12
-    prev_month = current_month - 1 if current_month > 1 else None
-
-    this_month_total = month_totals.get(current_month, 0.0)
-    prev_month_total = month_totals.get(prev_month, 0.0) if prev_month else 0.0
-    year_total = sum(month_totals.values())
-
-    delta = this_month_total - prev_month_total
-    # Spending up = bad (red), down = good (green). Streamlit colours a
-    # positive delta green by default, so invert it.
-    delta_str = None if prev_month is None else f"{delta:,.2f} SGD"
+    total_month = df_month["amount"].sum()
+    total_year  = df["amount"].sum()
+    avg_monthly = df.groupby(df["date"].dt.month)["amount"].sum().mean() if not df.empty else 0
 
     c1, c2, c3 = st.columns(3)
-    c1.metric(
-        f"{MONTH_LABELS[current_month - 1]} total",
-        f"SGD {this_month_total:,.2f}",
+    with c1:
+        st.metric("今月の支出", fmt_sgd(total_month))
+    with c2:
+        st.metric(f"{selected_year}年 合計", fmt_sgd(total_year))
+    with c3:
+        st.metric("月平均", fmt_sgd(avg_monthly))
+
+    if df.empty:
+        st.info("まだデータがありません。「+ 追加」から記録を始めましょう。")
+    else:
+        st.markdown('<p class="section-title">月別支出</p>', unsafe_allow_html=True)
+
+        monthly = (
+            df.groupby([df["date"].dt.month, "category"])["amount"]
+            .sum().reset_index()
+        )
+        monthly.columns = ["month", "category", "amount"]
+        monthly["month_label"] = monthly["month"].apply(lambda m: f"{m}月")
+        monthly["cat_label"]   = monthly["category"].apply(cat_label)
+
+        cat_order = [cat_label(c) for c in CAT_CONFIG]
+        color_map = {cat_label(k): v["color"] for k, v in CAT_CONFIG.items()}
+
+        fig_bar = px.bar(
+            monthly,
+            x="month_label", y="amount",
+            color="cat_label",
+            color_discrete_map=color_map,
+            category_orders={"cat_label": cat_order},
+            labels={"amount": "支出 (SGD)", "month_label": "", "cat_label": "カテゴリ"},
+            custom_data=["cat_label"],
+        )
+        fig_bar.update_traces(hovertemplate="%{customdata[0]}<br>SGD %{y:,.0f}<extra></extra>")
+        fig_bar.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="-apple-system, 'Hiragino Sans', sans-serif", color="#2C2C2A"),
+            legend=dict(
+                title="",
+                orientation="h",
+                yanchor="bottom", y=-0.45,
+                xanchor="left", x=0,
+                font=dict(color="#2C2C2A", size=12),
+            ),
+            margin=dict(l=0, r=0, t=10, b=90),
+            xaxis=dict(
+                showgrid=False,
+                tickfont=dict(color="#2C2C2A", size=12),
+            ),
+            yaxis=dict(
+                showgrid=True, gridcolor="#F1EFE8",
+                tickformat=",.0f", tickprefix="SGD ",
+                tickfont=dict(color="#2C2C2A", size=11),
+            ),
+            bargap=0.35,
+            height=320,
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        if not df_month.empty:
+            st.markdown('<p class="section-title">カテゴリ別（今月）</p>', unsafe_allow_html=True)
+            cat_month = (
+                df_month.groupby("category")["amount"].sum()
+                .reset_index().sort_values("amount", ascending=False)
+            )
+            rows_html = ""
+            max_amt = cat_month["amount"].max()
+            for _, row in cat_month.iterrows():
+                pct = row["amount"] / max_amt * 100 if max_amt > 0 else 0
+                bg  = icon_bg(row["category"])
+                col = cat_color(row["category"])
+                rows_html += f"""
+                <div class="tx-row">
+                  <div class="tx-icon" style="background:{bg};">{cat_icon(row['category'])}</div>
+                  <div class="tx-info">
+                    <div class="tx-name">{cat_label(row['category'])}</div>
+                    <div style="height:4px;background:#F1EFE8;border-radius:99px;margin-top:6px;overflow:hidden;">
+                      <div style="width:{pct:.0f}%;height:100%;background:{col};border-radius:99px;"></div>
+                    </div>
+                  </div>
+                  <div class="tx-amount">{fmt_sgd(row['amount'])}</div>
+                </div>"""
+            st.markdown(f'<div class="tx-card">{rows_html}</div>', unsafe_allow_html=True)
+
+        st.markdown('<p class="section-title">最近の取引</p>', unsafe_allow_html=True)
+        recent = df.sort_values("date", ascending=False).head(8)
+        rows_html = ""
+        for _, row in recent.iterrows():
+            bg         = icon_bg(row["category"])
+            notes_text = row["notes"] if row["notes"] else cat_label(row["category"])
+            sub        = row["subcategory"] if row["subcategory"] else ""
+            meta       = f"{row['date'].strftime('%m/%d')}　{sub}" if sub else row["date"].strftime("%m/%d")
+            rows_html += f"""
+            <div class="tx-row">
+              <div class="tx-icon" style="background:{bg};">{cat_icon(row['category'])}</div>
+              <div class="tx-info">
+                <div class="tx-name">{notes_text}</div>
+                <div class="tx-meta">{meta}</div>
+              </div>
+              <div class="tx-amount">−{fmt_sgd(row['amount'])}</div>
+            </div>"""
+        st.markdown(f'<div class="tx-card">{rows_html}</div>', unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# TAB 2 — HEATMAP
+# ═══════════════════════════════════════════════════════════
+@st.fragment
+def render_heatmap(selected_year):
+    df_h = load_df(year=selected_year)
+
+    if df_h.empty:
+        st.info("データがありません。")
+        return
+
+    st.markdown('<p class="section-title">日別支出ヒートマップ</p>', unsafe_allow_html=True)
+
+    daily = (
+        df_h.groupby(df_h["date"].dt.date)["amount"].sum().reset_index()
     )
-    c2.metric(
-        "vs previous month",
-        f"SGD {prev_month_total:,.2f}",
-        delta=delta_str,
-        delta_color="inverse",
+    daily.columns = ["date", "amount"]
+    daily["date"]  = pd.to_datetime(daily["date"])
+    daily["month"] = daily["date"].dt.month
+    daily["day"]   = daily["date"].dt.day
+
+    months_in_data = sorted(daily["month"].unique())
+    sel_month = st.selectbox(
+        "月を選択", months_in_data,
+        index=len(months_in_data) - 1,
+        format_func=lambda m: f"{m}月",
+        key="heatmap_month_sel",
     )
-    c3.metric("Year total", f"SGD {year_total:,.2f}")
 
-    st.divider()
+    dm = daily[daily["month"] == sel_month].copy()
 
-    # Stacked bar: one bar per month, one trace per category.
-    fig = go.Figure()
-    for cat in all_categories:
-        if cat not in selected_categories:
-            continue
-        y_values = [monthly_cat.get(f"{selected_year}-{m:02d}", {}).get(cat, 0.0)
-                    for m in range(1, 13)]
-        fig.add_trace(go.Bar(
-            name=cat,
-            x=MONTH_LABELS,
-            y=y_values,
-            marker_color=CATEGORY_COLORS.get(cat),
-            hovertemplate=f"<b>{cat}</b><br>%{{x}}: SGD %{{y:,.2f}}<extra></extra>",
-        ))
+    _, n_days  = calendar.monthrange(selected_year, int(sel_month))
+    first_dow  = date(selected_year, int(sel_month), 1).weekday()
 
-    fig.update_layout(
-        barmode='stack',
-        xaxis_title="Month",
-        yaxis_title="Amount (SGD)",
-        legend_title="Category",
-        height=480,
-        margin=dict(t=30, b=30),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    cells = []
+    col_idx, row_idx = first_dow, 0
+    for d in range(1, n_days + 1):
+        row = dm[dm["day"] == d]
+        amt = float(row["amount"].values[0]) if len(row) > 0 else 0.0
+        cells.append({"col": col_idx, "row": row_idx, "day": d, "amount": amt})
+        col_idx += 1
+        if col_idx > 6:
+            col_idx = 0
+            row_idx += 1
 
+    cell_df = pd.DataFrame(cells)
+    max_amt = cell_df["amount"].max() or 1.0
 
-# --------------------------------------------------------------------------- #
-# Heatmap tab
-# --------------------------------------------------------------------------- #
-with tab_heatmap:
-    st.subheader(f"{selected_year} Daily Spending Heatmap")
-
-    daily = tracker.daily_totals(expenses)
-
-    year_dates = pd.date_range(f"{selected_year}-01-01", f"{selected_year}-12-31")
-    weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-
-    # Build a 7 x N grid. iso week can wrap (week 1 / 52-53); use a continuous
-    # week index based on the offset from the first Monday so the calendar reads
-    # left-to-right without gaps.
-    jan1 = year_dates[0]
-    # Days since the Monday of the week containing Jan 1.
-    start_offset = jan1.isoweekday() - 1  # Mon=0 .. Sun=6
-    n_weeks = ((len(year_dates) + start_offset - 1) // 7) + 1
-
-    # Build one clickable square marker per day. A Plotly *Heatmap* trace does
-    # not emit click events through Streamlit's on_select, so we render the
-    # calendar as a Scatter of square markers instead — same look, but every
-    # cell is individually clickable. The date is carried in customdata so the
-    # click handler can read it back directly.
-    xs, ys, colors, custom = [], [], [], []
-    for d in year_dates:
-        day_index = (d - jan1).days + start_offset
-        week = day_index // 7
-        weekday = d.isoweekday() - 1  # Mon=0 .. Sun=6
-        date_str = d.strftime("%Y-%m-%d")
-        amount = daily.get(date_str, 0.0)
-        xs.append(week)
-        ys.append(weekday)
-        colors.append(amount)
-        custom.append([date_str, amount])
-
-    # Cap the colour scale at the 90th percentile of spending days so a few
-    # large outliers (e.g. rent) don't wash every ordinary day out to near-white.
-    # Days above the cap simply saturate at the deepest red.
-    spending_days = [a for a in colors if a > 0]
-    cmax = float(pd.Series(spending_days).quantile(0.90)) if spending_days else 1.0
-    if cmax <= 0:
-        cmax = max(spending_days) if spending_days else 1.0
-
-    # --- Resolve the currently selected day BEFORE drawing, so it can be ringed.
-    # Keep the picker's stored value valid for the current year (also clears a
-    # stale date left over from another year).
-    if (st.session_state.get("heatmap_date") is None
-            or st.session_state["heatmap_date"].year != selected_year):
-        st.session_state["heatmap_date"] = date(selected_year, 1, 1)
-
-    # A click leaves its selection in st.session_state["hm_chart"] (the chart's
-    # key), already available at the top of the rerun it triggered. Apply it only
-    # when it's a *new* click, otherwise it would keep overriding the date picker.
-    sel = st.session_state.get("hm_chart")
-    sel_points = sel.get("selection", {}).get("points", []) if sel else []
-    if sel_points:
-        cd = sel_points[0].get("customdata")
-        if cd and cd[0] != st.session_state.get("_last_click"):
-            st.session_state["_last_click"] = cd[0]
-            clicked = datetime.strptime(cd[0], "%Y-%m-%d").date()
-            if clicked.year == selected_year:
-                st.session_state["heatmap_date"] = clicked
-
-    selected_date = st.session_state["heatmap_date"]
-
-    # Pick a legend text colour that contrasts with the active Streamlit theme
-    # (the legend sits on the dark app background in dark mode).
-    try:
-        _dark = st.context.theme.type == "dark"
-    except Exception:
-        _dark = (st.get_option("theme.base") or "dark") == "dark"
-    legend_text_color = "#FAFAFA" if _dark else "#333333"
-
-    fig_hm = go.Figure(go.Scatter(
-        x=xs,
-        y=ys,
-        mode='markers',
-        name="SGD",  # shown in the legend instead of the default "trace 0"
+    # ── カレンダーを Scatter 四角マーカーで描画（クリック対応） ──
+    fig_hm = go.Figure()
+    fig_hm.add_trace(go.Scatter(
+        x=cell_df["col"].tolist(),
+        y=cell_df["row"].tolist(),
+        mode="markers",
         marker=dict(
-            symbol='square',
-            size=16,
-            color=colors,
-            colorscale='YlOrRd',
+            symbol="square",
+            size=34,
+            color=cell_df["amount"].tolist(),
+            colorscale=[
+                [0,    "#F1EFE8"],
+                [0.01, "#9FE1CB"],
+                [0.3,  "#5DCAA5"],
+                [0.7,  "#1D9E75"],
+                [1,    "#085041"],
+            ],
             cmin=0,
-            cmax=cmax,
+            cmax=max_amt,
             showscale=True,
-            # No title on the colour bar — it rendered unreadably over its own
-            # gradient. The "SGD" legend label names the scale instead.
-            colorbar=dict(title=dict(text="")),
-            line=dict(width=1, color='white'),
+            colorbar=dict(title="SGD", tickformat=",.0f", thickness=12, len=0.8),
+            line=dict(width=2, color="white"),
         ),
-        customdata=custom,
-        hovertemplate="%{customdata[0]}<br>SGD %{customdata[1]:,.2f}<extra></extra>",
-        # Plotly dims unselected points to opacity ~0.2 after a click, washing
-        # the rest of the calendar out to white. Keep them fully opaque instead.
-        unselected=dict(marker=dict(opacity=1)),
+        customdata=[
+            [int(r["day"]), f"{selected_year}/{int(sel_month):02d}/{int(r['day']):02d}", r["amount"]]
+            for _, r in cell_df.iterrows()
+        ],
+        hovertemplate="%{customdata[1]}<br>SGD %{customdata[2]:,.0f}<extra></extra>",
+        unselected=dict(marker=dict(opacity=0.35)),
+        selected=dict(marker=dict(color="#FF8C69", size=38)),
     ))
 
-    # Outline the selected day with a hollow square drawn on top.
-    if date(selected_year, 1, 1) <= selected_date <= date(selected_year, 12, 31):
-        sd_index = (pd.Timestamp(selected_date) - jan1).days + start_offset
-        fig_hm.add_trace(go.Scatter(
-            x=[sd_index // 7],
-            y=[selected_date.isoweekday() - 1],
-            mode='markers',
-            # For "-open" symbols the outline colour comes from marker.color
-            # (not marker.line); line.width controls how thick that ring is.
-            marker=dict(symbol='square-open', size=22,
-                        color='#1565C0',
-                        line=dict(width=3, color='#1565C0')),
-            hoverinfo='skip',
-            showlegend=False,
-            # Don't let a selection on the day-grid dim this highlight ring.
-            unselected=dict(marker=dict(opacity=1)),
-        ))
+    # 日付数字をアノテーションで描画（色を金額に応じて切り替え）
+    for _, r in cell_df.iterrows():
+        txt_color = "#FFFFFF" if r["amount"] > max_amt * 0.4 else "#5F5E5A"
+        fig_hm.add_annotation(
+            x=r["col"], y=r["row"],
+            text=str(int(r["day"])),
+            showarrow=False,
+            font=dict(size=11, color=txt_color, family="-apple-system, sans-serif"),
+        )
 
+    dow_labels = ["月", "火", "水", "木", "金", "土", "日"]
     fig_hm.update_layout(
-        xaxis=dict(title="Week of year", showgrid=False, zeroline=False),
-        yaxis=dict(
-            tickmode='array',
-            tickvals=list(range(7)),
-            ticktext=weekdays,
-            autorange='reversed',  # Mon at top
-            showgrid=False,
-            zeroline=False,
-        ),
-        height=320,
-        margin=dict(t=30, b=30),
-        plot_bgcolor='white',
-        showlegend=True,
-        legend=dict(font=dict(color=legend_text_color)),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(tickvals=list(range(7)), ticktext=dow_labels,
+                   tickfont_size=12, showgrid=False, side="top"),
+        yaxis=dict(autorange="reversed", showgrid=False, showticklabels=False),
+        margin=dict(l=0, r=50, t=40, b=10),
+        height=280,
     )
-    # on_select="rerun" makes a click rerun the script; the selection is read
-    # back from st.session_state["hm_chart"] at the top of that next run.
-    st.plotly_chart(
+
+    event = st.plotly_chart(
         fig_hm,
         use_container_width=True,
         on_select="rerun",
         selection_mode="points",
-        key="hm_chart",
+        key="heatmap_chart",
     )
 
-    st.divider()
-    st.markdown("**Daily detail** — click a heatmap cell or pick a date")
+    # ── 月集計 ──
+    month_total = dm["amount"].sum()
+    month_days  = len(dm[dm["amount"] > 0])
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric(f"{int(sel_month)}月 合計", fmt_sgd(month_total))
+    with c2:
+        st.metric("支出日数", f"{month_days}日")
+    with c3:
+        avg_day = month_total / month_days if month_days > 0 else 0
+        st.metric("1日平均", fmt_sgd(avg_day))
 
-    picked = st.date_input(
-        "Pick a date",
-        min_value=date(selected_year, 1, 1),
-        max_value=date(selected_year, 12, 31),
-        key="heatmap_date",
-    )
-    picked_str = picked.strftime("%Y-%m-%d")
-    day_rows = [e for e in expenses if e['date'] == picked_str]
-    if day_rows:
-        df_day = pd.DataFrame(day_rows)[tracker.FIELDNAMES]
-        st.dataframe(df_day, use_container_width=True, hide_index=True)
-        st.caption(f"Total: SGD {sum(r['amount'] for r in day_rows):,.2f}")
-    else:
-        st.info(f"No expenses on {picked_str}.")
+    # ── クリックした日の詳細 ──
+    sel_points = (event or {}).get("selection", {}).get("points", [])
+    if sel_points:
+        clicked_day  = int(sel_points[0]["customdata"][0])
+        clicked_date = date(selected_year, int(sel_month), clicked_day)
+        clicked_str  = clicked_date.strftime("%Y-%m-%d")
 
-
-# --------------------------------------------------------------------------- #
-# Details tab
-# --------------------------------------------------------------------------- #
-with tab_details:
-    st.subheader("All filtered expenses")
-
-    if expenses:
-        df = pd.DataFrame(expenses)[tracker.FIELDNAMES]
-        df = df.sort_values("date", ascending=False).reset_index(drop=True)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        st.caption(f"Total: SGD {df['amount'].sum():,.2f} ({len(df)} transactions)")
-
-        csv_bytes = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            "⬇ Download filtered CSV",
-            data=csv_bytes,
-            file_name=f"expenses_{selected_year}.csv",
-            mime="text/csv",
+        st.markdown(
+            f'<p class="section-title">{clicked_date.strftime("%Y/%m/%d")} の支出</p>',
+            unsafe_allow_html=True,
         )
-    else:
-        st.info("No expenses match the current filters.")
+        day_rows = df_h[df_h["date"].dt.strftime("%Y-%m-%d") == clicked_str]
+        if day_rows.empty:
+            st.info("この日の支出はありません。")
+        else:
+            st.markdown(
+                f'<div class="tx-card">{tx_rows_html(day_rows)}</div>',
+                unsafe_allow_html=True,
+            )
+
+
+with tab_heatmap:
+    render_heatmap(selected_year)
+
+
+# ═══════════════════════════════════════════════════════════
+# TAB 3 — DETAILS
+# ═══════════════════════════════════════════════════════════
+@st.fragment
+def render_details(selected_year):
+    df_d = load_df(year=selected_year)
+
+    if df_d.empty:
+        st.info("データがありません。")
+        return
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        month_opts = ["すべて"] + [f"{m}月" for m in sorted(df_d["date"].dt.month.unique())]
+        sel_m = st.selectbox("月", month_opts, key="detail_month")
+    with col_f2:
+        cat_opts = ["すべて"] + [cat_label(c) for c in CAT_CONFIG]
+        sel_c = st.selectbox("カテゴリ", cat_opts, key="detail_cat")
+
+    df_filtered = df_d.copy()
+    if sel_m != "すべて":
+        m_num = int(sel_m.replace("月", ""))
+        df_filtered = df_filtered[df_filtered["date"].dt.month == m_num]
+    if sel_c != "すべて":
+        cat_key = next((k for k, v in CAT_CONFIG.items() if v["label"] == sel_c), None)
+        if cat_key:
+            df_filtered = df_filtered[df_filtered["category"] == cat_key]
+
+    df_filtered = df_filtered.sort_values("date", ascending=False)
+
+    st.markdown(
+        f'<p class="section-title">{len(df_filtered)}件　合計 {fmt_sgd(df_filtered["amount"].sum())}</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="tx-card">{tx_rows_html(df_filtered)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+with tab_details:
+    render_details(selected_year)
+
+
+# ═══════════════════════════════════════════════════════════
+# TAB 4 — 追加フォーム
+# ═══════════════════════════════════════════════════════════
+@st.fragment
+def render_add_form():
+    st.markdown('<p class="section-title">支出を記録</p>', unsafe_allow_html=True)
+
+    # フォーム外でカテゴリを選ぶことでサブカテゴリが連動して更新される
+    cat_labels_map = {v["label"]: k for k, v in CAT_CONFIG.items()}
+    cat_display    = list(cat_labels_map.keys())
+    cat_sel_label  = st.selectbox("カテゴリ", cat_display, key="add_cat")
+    cat_sel_key    = cat_labels_map[cat_sel_label]
+
+    with st.form("add_expense_form", clear_on_submit=True):
+        date_input = st.date_input("日付", value=datetime.now().date())
+        amount_input = st.number_input(
+            "金額 (SGD)",
+            min_value=1,
+            step=100,
+            value=None,
+            placeholder="例: 3000",
+        )
+        subcat_opts = ["（なし）"] + tracker.CATEGORIES[cat_sel_key]
+        subcat_sel  = st.selectbox("サブカテゴリ", subcat_opts)
+        subcat_val  = None if subcat_sel == "（なし）" else subcat_sel
+        notes_input = st.text_input("メモ（任意）", placeholder="例: スーパー、カフェ…")
+        submitted   = st.form_submit_button("記録する", type="primary", use_container_width=True)
+
+    if submitted:
+        if not amount_input:
+            st.error("金額を入力してください。")
+        else:
+            try:
+                tracker.add_expense(
+                    date=date_input.strftime("%Y-%m-%d"),
+                    amount=amount_input,
+                    category=cat_sel_key,
+                    subcategory=subcat_val,
+                    notes=notes_input,
+                )
+                st.success(f"✓ 記録しました　{cat_sel_label}　{fmt_sgd(amount_input)}")
+                st.balloons()
+            except ValueError as e:
+                st.error(str(e))
+
+
+with tab_add:
+    render_add_form()
